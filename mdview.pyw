@@ -656,12 +656,13 @@ class Viewer:
         self.width_px = 900
         self.render_ms = 0
         self.links = {}
+        self._link_ids = {}
+        self._link_n = 0
         self.anchors = {}
         self.headings = []
         self.iid_by_line = {}
         self.toc_map = {}
         self.toc_stack = []
-        self.marks = set()
         self.margin_tags = set()
         self.link_tags = set()
         self.photos = []
@@ -934,6 +935,7 @@ class Viewer:
         r.bind_all("<Control-o>", lambda e: self.open_dialog())
         r.bind_all("<Control-f>", lambda e: self.show_find())
         r.bind_all("<Escape>", self._on_escape)
+        r.bind_all("<Control-w>", lambda e: self.root.destroy())
         r.bind_all("<F5>", lambda e: self.reload(True))
         r.bind_all("<F11>", lambda e: self._toggle_full())
         for key in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>"):
@@ -1230,6 +1232,8 @@ class Viewer:
             except tk.TclError:
                 pass
         self.link_tags = set()
+        self._link_ids = {}
+        self._link_n = 0
         self.toc.delete(*self.toc.get_children())
         self.photos = []
         if not items:
@@ -1309,18 +1313,19 @@ class Viewer:
     def _link_tag(self, url, styles=(), mode="body"):
         key = "%s|%s|%s|%s" % (url, "|".join(sorted(styles)), mode,
                                self.font_size)
-        h = abs(hash(key)) % 4000000000
-        name = "L%d" % h
-        if name in self.links:
-            return name
+        done = self._link_ids.get(key)
+        if done:
+            return done
+        self._link_n += 1
+        name = "L%d" % self._link_n
         fam = self.mono if ("inlinecode" in styles or mode == "mono") else self.ui
-        f = self._link_font((fam, self.font_size + (HEADING_SIZES[0] if mode == "h"
-                                                    else 0), tuple(styles)))
+        f = self._link_font((fam, self.font_size, tuple(styles)))
         kw = {"foreground": self.th["link"], "underline": 1}
         if mode != "heading":
             kw["font"] = str(f)
         self.text.tag_configure(name, **kw)
         self.links[name] = url
+        self._link_ids[key] = name
         self.link_tags.add(name)
         return name
 
@@ -1342,7 +1347,7 @@ class Viewer:
             self.toc_stack.pop()
         parent = self.toc_stack[-1][1] if self.toc_stack else ""
         iid = self.toc.insert(parent, "end", text=it["title"] or "（无标题）",
-                              tags=("lv%d" % lv,))
+                              tags=("lv%d" % lv,), open=True)
         self.toc_stack.append((lv, iid))
         self.toc_map[iid] = line
         self.iid_by_line[line] = iid
