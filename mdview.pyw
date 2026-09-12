@@ -1747,25 +1747,18 @@ class Viewer:
         except tk.TclError:
             return False
 
+    SPY_AT = 0.34          # “当前小节”参考线在视口高度的比例位置
+
     def _head_ref_line(self):
-        """取“当前小节”的参考行：平时看视口顶部；已滚到底时改看视口底部，
-        否则顶部再也推不动，末尾几个标题永远轮不到高亮。"""
+        """取参考行：视口约 1/3 高度处那一行，高亮它上方最近的标题。
+        参考线在视口内部，所以滚到底也不会硬跳到最后一个标题。"""
         t = self.text
         try:
-            top = int(t.index("@0,6").split(".")[0])
-            lo, hi = t.yview()
             h = t.winfo_height()
+            return int(t.index("@0,%d" % max(int(h * self.SPY_AT), 6))
+                       .split(".")[0])
         except (tk.TclError, ValueError):
             return None
-        scrollable = (hi - lo) < 0.995
-        if scrollable and hi > 0.995 and h > 24:
-            try:
-                bot = int(t.index("@0,%d" % (h - 4)).split(".")[0])
-            except (tk.TclError, ValueError):
-                return top
-            if bot > top:
-                return bot
-        return top
 
     def _sync_now(self):
         if not self._alive():
