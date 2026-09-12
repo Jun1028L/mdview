@@ -1747,31 +1747,29 @@ class Viewer:
         except tk.TclError:
             return False
 
-    SPY_AT = 0.34          # “当前小节”参考线在视口高度的比例位置
-
-    def _head_ref_line(self):
-        """取参考行：视口约 1/3 高度处那一行，高亮它上方最近的标题。
-        参考线在视口内部，所以滚到底也不会硬跳到最后一个标题。"""
+    def _current_heading(self):
+        """当前小节 = 视口内最靠上的那个标题；视口里一个标题都没有时
+        （正在读长章节的中段），退回视口上方最近的那个。"""
         t = self.text
         try:
-            h = t.winfo_height()
-            return int(t.index("@0,%d" % max(int(h * self.SPY_AT), 6))
-                       .split(".")[0])
+            top = int(t.index("@0,6").split(".")[0])
+            bot = int(t.index("@0,%d" % max(t.winfo_height() - 4, 8))
+                      .split(".")[0])
         except (tk.TclError, ValueError):
             return None
+        above = None
+        for line, lv, title, anchor in self.headings:
+            if line > bot:
+                break
+            if line >= top:
+                return (line, title)
+            above = (line, title)
+        return above
 
     def _sync_now(self):
         if not self._alive():
             return
-        top = self._head_ref_line()
-        if top is None:
-            return
-        cur = None
-        for line, lv, title, anchor in self.headings:
-            if line <= top + 1:
-                cur = (line, title)
-            else:
-                break
+        cur = self._current_heading()
         if not cur or cur[0] == self._cur_head:
             return
         self._cur_head = cur[0]
