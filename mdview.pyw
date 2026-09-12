@@ -1446,10 +1446,14 @@ class Viewer:
         photo = self._photo(path)
         if photo:
             lbl = tk.Label(t, image=photo, bd=0, bg=self.th["bg"],
-                           highlightthickness=1,
+                           highlightthickness=1, cursor="hand2",
                            highlightbackground=self.th["border"])
             lbl.image = photo
             lbl._url = it["url"]
+            lbl.bind("<Button-1>",
+                     lambda ev, u=it["url"]: self._open_url(u))
+            lbl.bind("<Enter>", lambda ev, u=it["url"]: self._tip(u))
+            lbl.bind("<Leave>", self._hide_tip)
             self.photos.append(lbl)
             t.window_create("end", window=lbl, padx=0, pady=6)
             t.insert("end", "\n", ("blank", self._lm_tag(lm)))
@@ -1612,26 +1616,13 @@ class Viewer:
         for tg in self.text.tag_names(idx):
             if tg in self.links:
                 return tg
-        for w in self.text.winfo_children():
-            u = getattr(w, "_url", None)
-            if u:
-                try:
-                    x0, y0 = w.winfo_rootx(), w.winfo_rooty()
-                except tk.TclError:
-                    continue
-                if (x0 - 2 <= self.root.winfo_pointerx() <=
-                        x0 + w.winfo_width() + 2 and
-                        y0 - 2 <= self.root.winfo_pointery() <=
-                            y0 + w.winfo_height() + 2):
-                    return ("widget", u)
         return None
 
     def _on_click(self, ev):
         tag = self._tag_at(ev)
         if not tag:
             return
-        url = tag[1] if isinstance(tag, tuple) else self.links[tag]
-        self._open_url(url)
+        self._open_url(self.links[tag])
 
     def _open_url(self, url):
         if not url:
@@ -1673,9 +1664,8 @@ class Viewer:
     def _on_motion(self, ev):
         tag = self._tag_at(ev)
         if tag:
-            url = tag[1] if isinstance(tag, tuple) else self.links[tag]
             self._set_cursor("hand2")
-            self._tip(url or "链接")
+            self._tip(self.links[tag] or "链接")
         else:
             self._hide_tip()
 
