@@ -1,0 +1,346 @@
+﻿---
+title: 语法全量示例
+project: 高度传感器 Modbus TCP 点表
+author: 仪表组
+date: 2026-09-12
+---
+
+# Markdown 查看器验收文档
+
+这是 **mdview.pyw** 的自测文档，覆盖程序支持的全部语法。
+行尾留两个空格算硬换行，
+正文里所有源文件换行都会按换行显示。
+
+普通段落里混用 **粗体**、*斜体*、***粗斜体***、`行内代码`、~~删除线~~、
+==高亮==、下划线 _emphasis_ 与 snake_case_name 保持不变。
+转义符 `\*不解析\n` 显示成 \*不解析\*。
+
+## 一、标题层级
+
+### 三级标题
+#### 四级标题
+##### 五级标题
+###### 六级标题
+
+Setext 标题（下面一行的等号）
+==========================
+
+## 二、列表
+
+### 无序与嵌套
+
+- 一级项目 A
+- 一级项目 B
+  - 二级项目 B-1
+    - 三级项目 B-1-a
+  - 二级项目 B-2
+    1. 嵌套有序列表
+    2. 第二项
+- 一级项目 C
+
+`+` 和 `*` 同样是列表符号：
+
++ 加号项目
++ 第二项
+* 星号项目
+
+### 有序列表与长编号
+
+1. 第一项
+2. 第二项
+3. 第三项到第十项
+   1. 子项一
+   2. 子项二
+11. 第十一项
+
+### 任务列表
+
+- [x] 已完成：Modbus 点位表核对
+- [ ] 未完成：MCGS 脚本联调
+- [ ] 未完成：现场标定
+  - [x] 子任务完成
+  - [ ] 子任务未完成
+
+### 松散列表（项之间有空行）
+
+- 松散第一项
+
+- 松散第二项
+
+## 三、引用
+
+> 一层引用，可以包含 **粗体** 和 `代码`。
+> 第二行属于同一个引用。
+>
+> > 嵌套引用。
+> >
+> > - 引用里的列表项
+> >
+> > ```sql
+> > SELECT 1;
+> > ```
+>
+> 回到第一层。
+
+## 四、代码
+
+### Python
+
+```python
+# 高度传感器 Modbus TCP 读取
+import struct
+
+REG_H = 0x0000      # 40001 高度值 mm
+REG_T = 0x0002      # 40003 温度 0.1℃
+COEF = 3.6e5        # 脉冲系数
+
+def read_height(unit=1, timeout=0.5):
+    """读取两寄存器并拼成 32 位有符号整数"""
+    regs = client.read_input_registers(address=REG_H, count=2, slave=unit)
+    value = struct.unpack('>i', struct.pack('>HH', regs[0], regs[1]))[0]
+    if abs(value) > 100000:
+        raise ValueError(f"越界: {value}")   # 字符串里的数字 999
+    return round(value / 1000.0, 2)
+
+if __name__ == '__main__':
+    for i in range(3):
+        print(i, read_height())
+```
+
+### C 与 C++
+
+```c
+#include <stdint.h>
+
+#define REG_H 0x0000
+typedef struct { uint16_t hi; uint16_t lo; } u32_t;
+
+static int32_t to_i32(u32_t v) {
+    int32_t r = (v.hi << 16) | v.lo;
+    if (r > 100000) return -1;   /* 越界 */
+    return r;
+}
+```
+
+```cpp
+class Sensor {
+public:
+    Sensor(int addr) : addr_(addr), ok(false) {}
+    bool read(double &out) {
+        uint32_t raw = 0;
+        if (!modbus_read_input_registers(ctx, addr_, 2, (uint16_t*)&raw))
+            return false;
+        out = (double)(int32_t)raw / 1000.0;
+        return true;
+    }
+private:
+    int addr_;
+    bool ok;
+};
+```
+
+### Shell 与 BAT
+
+```bash
+#!/bin/bash
+for host in 192.168.1.10 192.168.1.11; do
+    echo "检查 $host"          # 循环体
+    ping -c 2 "$host" || exit 1
+done
+```
+
+```bat
+@echo off
+setlocal enabledelayedexpansion
+for %%f in (*.md) do (
+    echo 处理 %%f
+    pythonw mdview.pyw "%%f"
+)
+pause
+```
+
+### 其它语言
+
+```sql
+SELECT id, name, height_mm AS h
+FROM points
+WHERE channel = 'CH1' AND height_mm > 0
+ORDER BY id DESC
+LIMIT 10;
+```
+
+```yaml
+points:
+  - name: 高度值
+    register: 40001   # 输入寄存器
+    type: int32
+    scale: 0.001
+    enabled: true
+```
+
+```json
+{
+  "name": "sensor",
+  "count": 12,
+  "ratio": 0.75,
+  "enabled": true,
+  "tags": ["a", "b"]
+}
+```
+
+```javascript
+const READ = 0x03;
+function parse(buf) {
+    let v = buf.readInt32BE(0);
+    if (isNaN(v)) throw new Error('bad frame');
+    return v / 1000;
+}
+module.exports = { parse, READ };
+```
+
+```pascal
+unit Unit1;
+interface
+function ReadHeight(addr: Integer): Double;
+implementation
+function ReadHeight(addr: Integer): Double;
+var raw: Int32;
+begin
+    raw := ModbusRead(addr, 2);
+    Result := raw / 1000.0;   { 注释 }
+end;
+end.
+```
+
+```lua
+local function clamp(x, lo, hi)
+    if x < lo then return lo elseif x > hi then return hi end
+    return x
+end
+```
+
+无标注围栏与缩进代码：
+
+```
+现场调试日志 2026-09-12
+CH1 OK 1234.56
+```
+
+    这是缩进 4 空格形成的代码块
+
+## 五、表格
+
+### 基本表格与对齐
+
+| 点位名称 | 寄存器 | 数据类型 | 说明 | 备注 |
+| :--- | :---: | :---: | :--- | ---: |
+| 高度值 | 40001 | int32 | 输入寄存器，单位 mm | 需拆两字 |
+| 温度 | 40003 | int16 | 单位 0.1 ℃ | |
+| 状态字 | 40005 | uint16 | 位定义见 **第 6 节** | 只读 |
+| 校准系数 | 40010 | float | 厂家私有 | `需授权` |
+| 空点位 | | | | |
+
+### 长文本与转义竖线
+
+| 项目 | 内容 |
+| --- | --- |
+| 超长文本 | 这一列故意写得很长，用来验证窗口宽度变化时表格单元格能否自动换行而不撑破窗口边界 |
+| 转义竖线 | a \| b 应该显示成一个单元格里的竖线 |
+| 多段 | 单元格内 *斜体* 与 [链接](https://example.com) |
+
+### 列数不齐（缺列）
+
+| A | B | C |
+| - | - | - |
+| 1 | 2 |
+| 1 | 2 | 3 | 4 |
+
+## 六、图片
+
+PNG 与 GIF 直接显示，不需要任何第三方库：
+
+![调制解调器接线示意](pic/demo.png)
+
+不存在的图片会给出明确提示：
+
+![缺失图片](pic/nope.png)
+
+绝对路径也可：
+
+![桌面截图](pic/demo.gif)
+
+## 七、链接与锚点
+
+- 网页链接：[示例站点](https://example.com "带 title")
+- 尖括号自动链接：<https://example.com/auto>
+- 裸链接：https://example.com/bare?q=1
+- 文内锚点：[跳到第八节](#八脚注)、[跳到表格节](#五表格)
+- 本地文件：[点表 CSV](data/points.csv)、[再点示例图片](pic/demo.png)
+- 邮箱与空链接：[联系](mailto:a@b.com)、[空]()
+
+## 八、脚注
+
+高度值需要按有符号 32 位解析[^signed]，温度是 16 位[^temp]。
+未定义的引用保持原样[^missing]，中文标签也可以[^中文标签]。
+
+[^signed]: 两个 16 位寄存器拼成 32 位，高字在前（Motorola 格式）。
+[^temp]: 温度寄存器在 40003，读取长度 1。
+[^中文标签]: 标签支持中文。
+
+## 九、其它
+
+---
+
+***
+
+___
+
+<div class="note">原始 HTML 块以灰色小字显示，不做渲染</div>
+
+<br>
+
+<span style="color:red">行内标签</span>会被剥掉，只保留文字。
+
+标题里的 `代码` 与 **粗体**：## 不算标题
+
+## 十、中文标点与括号（易错用例）
+
+（1）全角括号内的 **链接**：[点表](data/points.csv)，句号不能被吞掉。
+（2）书名号与冒号：《规约》V2.3 —— 40001：高度。
+（3）省略号与破折号：…… —— 引号“双”‘单’。
+（4）中英混排 `code` 后接中文，不应出现多余空格。
+（5）长中文句子自动换行时不能截断半个汉字，缩进也不能丢。
+（6）粗体紧跟中文：**要点**内容、中文**要点**、~~删除~~文字。
+（7）表格中的中文与数字混排：1 台 / 2 个 / 3.5 mm。
+（8）URL 结尾是中文：见 https://example.com/a，后面是中文。
+
+## 十一、边界情况
+
+未闭合的粗体 **这里没有闭合
+未闭合的围栏：
+
+```python
+print("下面还有内容")
+
+正常段落。
+| 没有分隔行的竖线 | 不算表格 |
+单列表格：
+
+| 只有一列 |
+| --- |
+| 值 |
+
+行首空格：
+
+   三个空格不是代码块
+    四个空格是代码块
+
+- [ ] 任务列表标记大小写 [X] 也算完成
+*单星号包着 **双星号*** 嵌套
+空表格单元格合计：
+
+|  |  |
+|---|---|
+|  | x |
+
+最后一行没有换行符
