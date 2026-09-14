@@ -845,6 +845,12 @@ class Viewer:
         btn("src", "源码", self._toggle_src, "显示原始 Markdown 文本")
         sep()
         btn("minus", "字号-", lambda: self.change_font(-1), "Ctrl+-")
+        self.font_box = ttk.Combobox(bar, values=[str(i) for i in range(7, 33)],
+                                      width=4, state="readonly")
+        self.font_box.set(str(self.font_size))
+        self.font_box.pack(side="left", padx=1)
+        self.font_box.bind("<<ComboboxSelected>>", self._on_font_pick)
+        _bind_tip(self, self.font_box, "直接选正文字号（7~32）")
         btn("plus", "字号+", lambda: self.change_font(1), "Ctrl++")
         btn("theme", "主题", self._toggle_theme, "浅色/深色切换")
         btn("copy", "复制", self._copy_all, "复制全文到剪贴板")
@@ -992,6 +998,22 @@ class Viewer:
                     bordercolor=th["border"], lightcolor=th["panel"],
                     darkcolor=th["panel"], arrowcolor=th["muted"])
         s.map("TScrollbar", background=[("active", th["btn_hl"])])
+        s.configure("TCombobox", fieldbackground=th["bg"], background=th["btn_bg"],
+                    foreground=th["fg"], arrowcolor=th["muted"],
+                    bordercolor=th["border"], lightcolor=th["btn_bg"],
+                    darkcolor=th["btn_bg"], arrowsize=12,
+                    padding=(2, 3, 0, 3), font=("Segoe UI", 9))
+        s.map("TCombobox",
+              fieldbackground=[("readonly", th["bg"])],
+              foreground=[("readonly", th["fg"])],
+              selectbackground=[("readonly", th["bg"])],
+              selectforeground=[("readonly", th["fg"])],
+              background=[("active", th["btn_hl"])])
+        for opt, val in (("*TCombobox*Listbox*Background", th["bg"]),
+                         ("*TCombobox*Listbox*Foreground", th["fg"]),
+                         ("*TCombobox*Listbox*selectBackground", th["toc_sel"]),
+                         ("*TCombobox*Listbox*selectForeground", th["fg"])):
+            self.root.option_add(opt, val)
         self.btns["src"].configure(text="渲染" if self.show_src else "源码")
         self._configure_tags()
 
@@ -1878,10 +1900,31 @@ class Viewer:
     def _rerender_now(self):
         self._render(self.raw)
 
-    def change_font(self, d):
-        self.font_size = min(max(self.font_size + d, 7), 32)
+    def set_font(self, n):
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return
+        n = min(max(n, 7), 32)
+        if n == self.font_size:
+            return
+        self.font_size = n
+        self._sync_font_box()
         self._save_settings()
+        self._configure_tags()
         self._rerender_now()
+
+    def _sync_font_box(self):
+        try:
+            self.font_box.set(str(self.font_size))
+        except tk.TclError:
+            pass
+
+    def _on_font_pick(self, event=None):
+        self.set_font(self.font_box.get())
+
+    def change_font(self, d):
+        self.set_font(self.font_size + d)
 
     def _toggle_theme(self):
         self.theme_name = "dark" if self.theme_name == "light" else "light"
@@ -2086,7 +2129,7 @@ HELP_MD = """Markdown 查看器
 
 常用操作
 Ctrl+O 打开文件   F5 重新读取（自动判断编码）   Ctrl+F 查找（回车下一个）
-Ctrl + / Ctrl - 调字号（或 Ctrl+滚轮）   Alt+左/右 切换同目录的上一份/下一份
+Ctrl + / Ctrl - 调字号（或 Ctrl+滚轮；工具栏字号框可直接选 7~32）   Alt+左/右 切换同目录的上一份/下一份
 F11 全屏   Esc 关闭查找条   Ctrl+C 复制选中文字（没选中则复制全文）
 工具栏“编码”在中文乱码时手动切换 utf-8 / gbk / big5 / utf-16
 工具栏“源码”切回原始 Markdown，用来核对缩进和没生效的语法
