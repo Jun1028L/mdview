@@ -50,6 +50,7 @@ THEMES = {
 }
 
 HEADING_SIZES = (26, 20, 16, 13, 12, 11)
+FONT_MIN, FONT_MAX = 7, 32
 BULLETS = ("\u2022", "\u25e6", "\u25aa", "\u00b7")
 CHECK_ON = "\u2611"
 CHECK_OFF = "\u2610"
@@ -58,6 +59,7 @@ LM_STEP = 2
 WHEEL_LINES = 3
 CELL_PAD = 18
 QUOTE_LM = 30
+NATIVE_IMG = (".png", ".gif", ".ppm", ".pgm")   # tkinter 原生能读的格式
 
 # ---------------------------------------------------------------- 行内解析 ---
 
@@ -233,6 +235,7 @@ LIST_RE = re.compile(r"^( *)([-*+]|\d{1,9}[.)])( +)(.*)$")
 TABLE_DELIM_RE = re.compile(r"^[ \t|]*[:-]+(?:[ \t|]*[:-]+)*[ \t|]*$")
 FOOTDEF_RE = re.compile(r"^ {0,3}\[\^([^\]\s]+)\]:[ \t]*(.*)$")
 SETEXT_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+INDENT_RE = re.compile(r"^ {4}(?=\S)")
 TRAIL_RE = re.compile(r"[ \t]+$")
 
 
@@ -317,31 +320,43 @@ def is_table_start(lines, i):
 
 
 def collect_footnotes(lines, doc):
-    """摘出脚注定义，编号按定义出现顺序。"""
+    """摘出脚注定义，编号按定义出现顺序。围栏代码块里的不算。"""
     out = list(lines)
     defs = []
     i = 0
+    fence = ""
+    flen = 0
     while i < len(out):
-        m = FOOTDEF_RE.match(out[i])
-        if not m:
-            i += 1
+        fm = FENCE_RE.match(TRAIL_RE.sub("", out[i].rstrip()))
+        if fm:
+            fc = fm.group(1)
+            if not fence:
+                fence, flen = fc[0], len(fc)
+            elif fc[0] == fence and len(fc) >= flen:
+                fence = ""
+        elif not fence:
+            m = FOOTDEF_RE.match(out[i])
+            if not m:
+                i += 1
+                continue
+            label = m.group(1)
+            body = [m.group(2)]
+            j = i + 1
+            while j < len(out) and (not out[j].strip()
+                                    or out[j].startswith("    ")
+                                    or out[j].startswith("\t")):
+                if out[j].strip():
+                    body.append(out[j].strip())
+                j += 1
+            doc.footnums[label] = len(defs) + 1
+            defs.append({"kind": "footdef", "label": label,
+                         "num": len(defs) + 1,
+                         "spans": parse_inline(" ".join(body))})
+            for k in range(i, j):
+                out[k] = ""
+            i = j
             continue
-        label = m.group(1)
-        body = [m.group(2)]
-        j = i + 1
-        while j < len(out) and (not out[j].strip()
-                                or out[j].startswith("    ")
-                                or out[j].startswith("\t")):
-            if out[j].strip():
-                body.append(out[j].strip())
-            j += 1
-        doc.footnums[label] = len(defs) + 1
-        defs.append({"kind": "footdef", "label": label,
-                     "num": len(defs) + 1,
-                     "spans": parse_inline(" ".join(body))})
-        for k in range(i, j):
-            out[k] = ""
-        i = j
+        i += 1
     return out, defs
 
 
@@ -466,6 +481,18 @@ def parse_blocks(lines, doc):
             out.append({"kind": "htmlraw", "text": line})
             i += 1
             continue
+        if not para and INDENT_RE.match(line):
+            j, body = i, []
+            while j < n and (not lines[j].strip() or INDENT_RE.match(lines[j])):
+                body.append(lines[j])
+                j += 1
+            while body and not body[-1].strip():
+                body.pop()
+            out.append({"kind": "code", "lang": "",
+                        "text": "\n".join(l[4:] if l[:4] == "    "
+                                          else l.strip() for l in body)})
+            i = j
+            continue
         para.append(line)
         i += 1
     emit_para()
@@ -560,7 +587,7 @@ def flatten_list(items, doc, level):
                             "spans": s["spans"], "quote": s.get("quote", 0)})
                 first = False
             elif k == "li":
-                s["level"] = level + 1
+                s["level"] = s.get("level", 0) + level + 1
                 s["loose"] = loose
                 out.append(s)
                 first = False
@@ -570,7 +597,7 @@ def flatten_list(items, doc, level):
                             "spans": s["spans"], "quote": s.get("quote", 0)})
             else:
                 if k == "code":
-                    s["pad"] = level * 22
+                    s["pad"] = s.get("pad", 0) + level * 22
                 out.append(s)
                 first = False
         if first:
@@ -677,6 +704,7 @@ class Viewer:
         self.hits = []
         self.hit_pos = -1
         self.doc_font = None
+        self._anchor = None
 
         self.files = self._expand_targets(targets or [])
         if self.files:
@@ -729,11 +757,21 @@ class Viewer:
                 d = json.load(f)
         except (OSError, ValueError):
             return
-        for k in ("font_size", "theme_name", "toc_visible", "wrap_on", "show_src"):
-            if k in d and isinstance(d[k], type(getattr(self, k))):
+        if not isinstance(d, dict):
+            return
+        n = d.get("font_size")
+        if isinstance(n, int) and not isinstance(n, bool):
+            self.font_size = min(max(n, FONT_MIN), FONT_MAX)
+        th = d.get("theme_name")
+        if isinstance(th, str) and th in THEMES:
+            self.theme_name = th
+        for k in ("toc_visible", "wrap_on", "show_src"):
+            if isinstance(d.get(k), bool):
                 setattr(self, k, d[k])
-        self.recent = [r for r in d.get("recent", [])
-                       if isinstance(r, str) and os.path.isfile(r)]
+        rec = d.get("recent")
+        if isinstance(rec, list):
+            self.recent = [r for r in rec if isinstance(r, str)
+                           and os.path.isfile(r)]
         if not self.path and self.recent:
             self.path = self.recent[0]
 
@@ -845,8 +883,9 @@ class Viewer:
         btn("src", "源码", self._toggle_src, "显示原始 Markdown 文本")
         sep()
         btn("minus", "字号-", lambda: self.change_font(-1), "Ctrl+-")
-        self.font_box = ttk.Combobox(bar, values=[str(i) for i in range(7, 33)],
-                                      width=4, state="readonly")
+        self.font_box = ttk.Combobox(bar, values=[str(i) for i in
+                                                   range(FONT_MIN, FONT_MAX + 1)],
+                                     width=4, state="readonly")
         self.font_box.set(str(self.font_size))
         self.font_box.pack(side="left", padx=1)
         self.font_box.bind("<<ComboboxSelected>>", self._on_font_pick)
@@ -933,6 +972,10 @@ class Viewer:
         t.bind("<Leave>", lambda e: self._hide_tip())
         t.bind("<MouseWheel>", self._on_wheel)
         t.bind("<Control-MouseWheel>", self._on_zoom)
+        # 分页键要绑在控件上：bindtags 里 Text 类绑定先于 all，只在 bind_all
+        # 里 return "break" 压不住它，会变成翻两倍。
+        t.bind("<Prior>", lambda e: self._page(-1))
+        t.bind("<Next>", lambda e: self._page(1))
         t.bind("<Control-c>", self._on_copy)
         t.bind("<Control-C>", self._on_copy)
         t.bind("<Configure>", self._on_resize)
@@ -1115,6 +1158,7 @@ class Viewer:
                                 if os.path.normcase(r) != os.path.normcase(path)]
         self.recent = self.recent[:15]
         self._save_settings()
+        self._anchor = None          # 换文件从头看，只有重排才保持位置
         return self.reload(True)
 
     def reload(self, sniff=False):
@@ -1205,6 +1249,7 @@ class Viewer:
                 text = data.decode(self.enc)
             except (UnicodeDecodeError, LookupError):
                 text = data.decode(self.enc, "replace")
+            self._anchor = int(self.text.index("@0,6").split(".")[0])
             self._render(text)
             self.status.set("编码：%s（如果中文仍是乱码，继续点“编码”切换）" % self.enc)
 
@@ -1239,6 +1284,9 @@ class Viewer:
         if not self.show_src:
             t.configure(wrap="word" if self.wrap_on else "none")
         t.configure(state="normal")
+        # _anchor 由“同一份文本重排”的调用方设成当前顶部行；None 表示从头显示
+        top = self._anchor or 1
+        self._anchor = None
         t.delete("1.0", "end")
         self.links = {}
         self.anchors = {}
@@ -1258,17 +1306,28 @@ class Viewer:
         self._link_n = 0
         self.toc.delete(*self.toc.get_children())
         self.photos = []
+        self.hits = []
+        self.hit_pos = -1
         if not items:
             t.insert("end", "（空文件）\n", ("muted",))
         for it in items:
             getattr(self, "_d_" + it["kind"])(it)
         t.configure(state="disabled")
-        t.see("1.0")
+        ln = min(top, self._line())
+        # see() 只保证“看得见”，重排后目标行往往已经在视口里，位置就留在原处了；
+        # 改成按像素量出该行的绝对偏移再滚。count 要量全文，只在真要回位时算。
+        total = self._px("1.0", "end-1c") if ln > 1 else 0
+        t.yview_moveto(self._px("1.0", "%d.0" % ln) / float(total)
+                       if total else 0)
         t.xview_moveto(0)
         self.render_ms = int((time.time() - t0) * 1000)
         self._raise_tags()
         self._set_toc_visible()
         return True
+
+    def _px(self, a, b):
+        n = self.text.count(a, b, "update", "ypixels")
+        return (n[0] if isinstance(n, tuple) else n) or 0
 
     def _line(self):
         return int(self.text.index("end-1c").split(".")[0])
@@ -1487,9 +1546,18 @@ class Viewer:
             if it["alt"]:
                 t.insert("end", it["alt"] + "\n", ("imgalt",))
         else:
-            why = "（JPG/WEBP 需要 Pillow 支持，当前未安装）" if photo is False \
-                else ("（文件不存在）" if path else "（地址无法解析）")
-            self._insert_spans([span("图片 %s %s" % (it["url"], why))],
+            url = it["url"] or ""
+            if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", url):
+                why = "（网络图片不加载，本地化后仍可显示）"
+            elif photo is False:
+                why = "（该格式需要 Pillow 支持，当前未安装）"
+            elif path and os.path.isfile(path):
+                why = "（图片格式不支持或已损坏）"
+            elif path:
+                why = "（文件不存在）"
+            else:
+                why = "（地址无法解析）"
+            self._insert_spans([span("图片 %s %s" % (url, why))],
                                ["imgalt"] + qtags + [self._lm_tag(lm)])
 
     def _media_path(self, url):
@@ -1519,18 +1587,7 @@ class Viewer:
             return None
         ext = os.path.splitext(path)[1].lower()
         try:
-            if ext in (".jpg", ".jpeg", ".webp"):
-                try:
-                    from PIL import Image, ImageTk
-                except ImportError:
-                    self.photo_cache[key] = False
-                    return False
-                im = Image.open(path)
-                maxw = max(self.width_px - 70, 200)
-                if im.width > maxw:
-                    im = im.resize((maxw, int(im.height * maxw / im.width)))
-                photo = ImageTk.PhotoImage(im)
-            else:
+            if ext in NATIVE_IMG:
                 photo = tk.PhotoImage(file=path)
                 maxw = max(self.width_px - 70, 200)
                 if photo.width() > maxw:
@@ -1539,12 +1596,24 @@ class Viewer:
                 if photo.height() > 1400:
                     factor = max(1, int(photo.height() / 1200))
                     photo = photo.subsample(factor, factor)
+            else:
+                try:
+                    from PIL import Image, ImageTk
+                except ImportError:
+                    self.photo_cache[key] = False
+                    return False
+                im = Image.open(path)
+                im.load()
+                maxw = max(self.width_px - 70, 200)
+                if im.width > maxw:
+                    im = im.resize((maxw, int(im.height * maxw / im.width)))
+                photo = ImageTk.PhotoImage(im)
         except tk.TclError:
             self.photo_cache[key] = None
             return None
         except Exception:
-            self.photo_cache[key] = False
-            return False
+            self.photo_cache[key] = None
+            return None
         self.photos.append(photo)
         self.photo_cache[key] = photo
         return photo
@@ -1662,7 +1731,7 @@ class Viewer:
                 return
             self.jump_line(line)
             return
-        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", url):
+        if re.match(r"^(?:[a-zA-Z][a-zA-Z0-9+.\-]*://|mailto:)", url):
             try:
                 webbrowser.open(url)
                 self.status.set("已用默认浏览器打开：" + url)
@@ -1756,12 +1825,16 @@ class Viewer:
         self.sync_job = self.root.after(120, self._sync_now)
 
     def _on_destroy(self, event=None):
-        if getattr(self, "sync_job", None):
-            try:
-                self.root.after_cancel(self.sync_job)
-            except tk.TclError:
-                pass
-            self.sync_job = None
+        # 关窗时把排队的 after 任务全撤掉，否则 Tk 会再跑一次已销毁的回调，
+        # 往 stderr 吐 "invalid command name ..._rerender"
+        for k in ("sync_job", "find_job", "_resize_job", "_tip_job"):
+            job = getattr(self, k, None)
+            if job:
+                try:
+                    self.root.after_cancel(job)
+                except (tk.TclError, ValueError):
+                    pass
+                setattr(self, k, None)
 
     def _alive(self):
         try:
@@ -1836,7 +1909,9 @@ class Viewer:
             self.text.tag_remove("target", "1.0", "end")
 
     def _page(self, d):
-        self.text.yview_scroll(int(d * self.text.winfo_height() / 30), "units")
+        # 必须 return "break"：否则 Tk 给 Text 的类绑定会再翻一页，变成双倍位移
+        self.text.yview_scroll(1 if d > 0 else -1, "pages")
+        return "break"
 
     def _over_text(self, w):
         try:
@@ -1898,14 +1973,17 @@ class Viewer:
         self._rerender_now()
 
     def _rerender_now(self):
+        self._anchor = int(self.text.index("@0,6").split(".")[0])
         self._render(self.raw)
+        if self.findbar.winfo_manager() and self.find_var.get():
+            self.do_find()
 
     def set_font(self, n):
         try:
             n = int(n)
         except (TypeError, ValueError):
             return
-        n = min(max(n, 7), 32)
+        n = min(max(n, FONT_MIN), FONT_MAX)
         if n == self.font_size:
             return
         self.font_size = n
@@ -2139,14 +2217,15 @@ F11 全屏   Esc 关闭查找条   Ctrl+C 复制选中文字（没选中则复�
 标题 # 到 ######，也支持下方 === / --- 的下划线式标题
 粗体 **x**、斜体 *x*、粗斜体 ***x***、删除线 ~~x~~、高亮 ==x==、行内代码 `x`
 无序 / 有序 / 嵌套列表、任务列表 - [x]、引用块 >（可嵌套）、分隔线 --- 或 ***
-围栏代码块 ```语言（Python / C / Shell / BAT / SQL / YAML / JSON / Java / JS / Pascal / Lua 有着色）
+围栏代码块 ```语言（Python / C / Shell / BAT / SQL / YAML / JSON / Java / JS / Pascal / Lua 有着色），
+缩进 4 空格的行也算代码块
 GFM 表格（含 :---: 对齐），图片 ![](相对路径或绝对路径)，自动链接 <https://...>
 脚注 [^标签] 与 [^标签]: 定义，YAML 头部元信息，原始 HTML 以灰色显示
 
 显示限制
-表格按真实控件绘制，窗口过窄时自动改为纯文本行；JPG/WEBP 需要安装 Pillow
-才能显示，PNG/GIF/BMP 直接支持。正文中所有源文件换行都按换行渲染，
-所以 Markdown 里手动换行和硬换行的效果一致。
+表格按真实控件绘制，窗口过窄时自动改为纯文本行。图片只读本机文件，网络图片不下载；
+PNG/GIF/PPM 由 tkinter 直接显示，JPG/WEBP/BMP 等要装 Pillow。正文中所有源文件换行
+都按换行渲染，所以手动换行和行尾两空格的硬换行效果一样。
 
 怎么用文件关联打开
 把 .md 文件拖到 mdview.pyw 图标上即可打开；
@@ -2292,7 +2371,7 @@ WELCOME_MD = """# Markdown 查看器
 ## 语法示例
 
 | 类别 | 写法 | 显示效果 |
-| :--- | :--- | :--- |
+| :--- | :--- | ---: |
 | 强调 | `**粗体**` `~~删除~~` | **粗体** ~~删除~~ |
 | 代码 | 两个反引号包住的 print(1) | 见左侧行内代码 |
 | 链接 | `[百度](https://www.baidu.com)` | [百度](https://www.baidu.com) |
