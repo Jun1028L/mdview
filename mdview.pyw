@@ -60,6 +60,7 @@ WHEEL_LINES = 3
 CELL_PAD = 18
 QUOTE_LM = 30
 NATIVE_IMG = (".png", ".gif", ".ppm", ".pgm")   # tkinter 原生能读的格式
+PHOTO_CACHE_MAX = 64   # 一张解码后的图几 MB，换文件看不封顶会把内存吃掉
 
 # ---------------------------------------------------------------- 行内解析 ---
 
@@ -696,6 +697,7 @@ class Viewer:
         self.photo_cache = {}
         self.cell_frames = []
         self.link_fonts = {}
+        self._mw = {}
         self.recent = []
         self.last_sync = 0.0
         self.sync_job = None
@@ -798,6 +800,8 @@ class Viewer:
     def _rebuild_fonts(self):
         sz = self.font_size
         F = tkfont.Font
+        # f_body 是原地改 size 的，Tk 字体名不变，按名字存的宽度缓存必须作废
+        self._mw = {}
         self.f_body.configure(family=self.ui, size=sz)
         self.f_mono = F(family=self.mono, size=sz)
         self.f_small = F(family=self.ui, size=max(sz - 2, 7))
@@ -828,6 +832,16 @@ class Viewer:
             "mono": F(family=self.mono, size=sz),
             "monob": F(family=self.mono, size=sz, weight="bold"),
         }
+
+    def _measure(self, font, text):
+        """font.measure 是一次 Tcl 往返，同一批字符串（空格、列表符号、单元格
+        文本）每次重排都要重新量，缓在这里能省掉九成调用。"""
+        key = (str(font), text)
+        v = self._mw.get(key)
+        if v is None:
+            v = font.measure(text)
+            self._mw[key] = v
+        return v
 
     def _link_font(self, key):
         f = self.link_fonts.get(key)
@@ -1313,21 +1327,37 @@ class Viewer:
         for it in items:
             getattr(self, "_d_" + it["kind"])(it)
         t.configure(state="disabled")
-        ln = min(top, self._line())
-        # see() 只保证“看得见”，重排后目标行往往已经在视口里，位置就留在原处了；
-        # 改成按像素量出该行的绝对偏移再滚。count 要量全文，只在真要回位时算。
-        total = self._px("1.0", "end-1c") if ln > 1 else 0
-        t.yview_moveto(self._px("1.0", "%d.0" % ln) / float(total)
-                       if total else 0)
+        self._scroll_to(top)
         t.xview_moveto(0)
         self.render_ms = int((time.time() - t0) * 1000)
         self._raise_tags()
         self._set_toc_visible()
         return True
 
-    def _px(self, a, b):
-        n = self.text.count(a, b, "update", "ypixels")
+    def _count(self, a, b, what):
+        """count -update 量得到视口外的行（bbox/dlineinfo 只对看得见的行有值）；
+        带两个选项时 tkinter 返回裸 int，结果为 0 时返回 None。"""
+        n = self.text.count(a, b, "update", what)
         return (n[0] if isinstance(n, tuple) else n) or 0
+
+    def _scroll_to(self, line):
+        """把某一行滚到视口顶部。see() 只保证“看得见”，目标行本来就在视口里时
+        它什么都不做，所以按像素算绝对偏移；但像素的分母比 Tk 实际用的总高少
+        最后一行，靠后的行会被顶到上沿之外（实测 362 行的文档跳 344 行落到 345
+        且目标不可见），所以再按显示行数回补一次——units 就是显示行。
+        count 要量全文，只在真要定位时算。"""
+        t = self.text
+        line = max(1, min(int(line), self._line()))
+        if line == 1:
+            t.yview_moveto(0)
+            return
+        idx = "%d.0" % line
+        total = self._count("1.0", "end-1c", "ypixels")
+        t.yview_moveto(self._count("1.0", idx, "ypixels") / float(total)
+                       if total else 0)
+        n = self._count("@0,0", idx, "displaylines")
+        if n:
+            t.yview_scroll(n, "units")
 
     def _line(self):
         return int(self.text.index("end-1c").split(".")[0])
@@ -1452,8 +1482,8 @@ class Viewer:
 
     def _pad_to(self, text, width):
         f = self.f_body
-        unit = max(f.measure(" ") , 1)
-        pad = width - f.measure(text)
+        unit = max(self._measure(f, " "), 1)
+        pad = width - self._measure(f, text)
         return text + " " * max(0, int(round(pad / unit)))
 
     def _d_li(self, it):
@@ -1461,7 +1491,7 @@ class Viewer:
         lm, qtags = self._qt(it, 16 + it.get("level", 0) * 22)
         marker = it.get("marker", "\u2022")
         checked = it.get("checked")
-        text_w = max(self.f_body.measure(marker) + 12, 22)
+        text_w = max(self._measure(self.f_body, marker) + 12, 22)
         tab = lm + text_w
         tname = self._lm_tag(tab, lm)
         style = ["li"] + qtags + [tname] + (["liloose"] if it.get("loose")
@@ -1488,7 +1518,7 @@ class Viewer:
 
     def _d_hr(self, it):
         lm, qtags = self._qt(it, 16)
-        unit = max(self.f_body.measure("—"), 1)
+        unit = max(self._measure(self.f_body, "—"), 1)
         n = max(int((self.width_px - lm) / unit), 8)
         self.text.insert("end", "\u2014" * n + "\n",
                          tuple(["hr"] + qtags + [self._lm_tag(lm)]))
@@ -1579,7 +1609,9 @@ class Viewer:
     def _photo(self, path):
         if not path:
             return None
-        key = (path, self.width_px, self.font_size)
+        # 只按窗口宽度分档：字号不改变图片尺寸，带进 key 会让每次调字号都重新
+        # 解码一遍全文的图
+        key = (path, self.width_px)
         if key in self.photo_cache:
             return self.photo_cache[key]
         if not os.path.isfile(path):
@@ -1614,33 +1646,45 @@ class Viewer:
         except Exception:
             self.photo_cache[key] = None
             return None
+        if len(self.photo_cache) >= PHOTO_CACHE_MAX:
+            # 正在显示的那张由 Label 自己持有引用，删缓存不会让图变空
+            self.photo_cache.pop(next(iter(self.photo_cache)), None)
         self.photos.append(photo)
         self.photo_cache[key] = photo
         return photo
 
     # ------------------------------------------------------------ 表格 ----
+    @staticmethod
+    def _cell(raw):
+        """一个单元格 → (渲染文本, 首个 span 的样式)。格内换行按空格显示，
+        列宽和 Label 都从这一份文本算，不再各自 parse 一遍。"""
+        sp = [x for x in parse_inline(raw) if not x.get("nl")]
+        text = plain(sp)
+        styles = sp[0]["styles"] if sp and text == sp[0]["text"] else []
+        if "\n" in text:
+            text = text.replace("\n", " ")
+        return text, styles
+
     def _d_table(self, it):
         t = self.text
-        head, rows, aligns = it["head"], it["rows"], it["aligns"]
+        aligns = it["aligns"]
+        ncols = len(aligns)
         lm, qtags = self._qt(it, 16)
         avail = max(self.width_px - lm - 8, 120)
-        if avail < (len(aligns) + 1) * 64:
+        if avail < (ncols + 1) * 64:
             self._table_as_text(it, lm, qtags)
             return
-        widths = self._col_widths(head, rows, len(aligns), avail)
+        cells = [[self._cell(r[ci] if ci < len(r) else "")
+                  for ci in range(ncols)]
+                 for r in [it["head"]] + it["rows"]]
+        widths = self._col_widths(cells, avail)
         anchor = {"left": "w", "center": "center", "right": "e"}
+        justify = {"left": "left", "center": "center", "right": "right"}
         frame = tk.Frame(t, bg=self.th["border"])
-        rows_all = [(True, 0, head)] + [(False, i + 1, r)
-                                        for i, r in enumerate(rows)]
-        for is_head, off, row in rows_all:
-            for ci in range(len(aligns)):
-                content = row[ci] if ci < len(row) else ""
-                sp = [x for x in parse_inline(content) if not x.get("nl")]
-                text = plain(sp)
-                styles = sp[0]["styles"] if sp and text == sp[0]["text"] else []
+        for off, row in enumerate(cells):
+            is_head = off == 0
+            for ci, (text, styles) in enumerate(row):
                 mono = "code" in styles
-                if "\n" in text:
-                    text = text.replace("\n", " ")
                 fkey = ("mono" if mono else "body") + ("b" if is_head or
                                                        "bold" in styles else "")
                 bg = (self.th["th"] if is_head else
@@ -1648,8 +1692,7 @@ class Viewer:
                 lbl = tk.Label(frame, text=text, font=str(self.cell_fonts[fkey]),
                                bg=bg, fg=self.th["done"] if "strike" in styles
                                else self.th["fg"], anchor=anchor[aligns[ci]],
-                               justify={"left": "left", "center": "center",
-                                       "right": "right"}[aligns[ci]],
+                               justify=justify[aligns[ci]],
                                padx=8, pady=4, bd=1, relief="solid",
                                wraplength=max(widths[ci] - CELL_PAD, 24))
                 lbl.grid(row=off, column=ci, sticky="nsew")
@@ -1662,18 +1705,19 @@ class Viewer:
         t.insert("end", "\n", ("blank", self._lm_tag(lm)))
         self.cell_frames.append(frame)
 
-    def _col_widths(self, head, rows, ncols, avail):
+    def _col_widths(self, cells, avail):
         f = self.cell_fonts["body"]
         fb = self.cell_fonts["bodyb"]
-        nat = [max(fb.measure(c), f.measure(c)) for c in head[:ncols]]
-        nat += [0] * (ncols - len(nat))
-        for r in rows:
-            for ci in range(min(ncols, len(r))):
-                txt = plain([s for s in parse_inline(r[ci]) if not s.get("nl")])
-                nat[ci] = max(nat[ci], f.measure(txt), fb.measure(txt))
-        need = [n + CELL_PAD for n in nat]
+        need = []
+        for ci in range(len(cells[0])):
+            w = 0
+            for row in cells:
+                txt = row[ci][0]
+                w = max(w, self._measure(f, txt), self._measure(fb, txt))
+            need.append(w + CELL_PAD)
         if sum(need) <= avail:
             return need
+        ncols = len(need)
         out = [0] * ncols
         active = list(range(ncols))
         budget = avail
@@ -1695,8 +1739,7 @@ class Viewer:
         style = ["para"] + qtags + [self._lm_tag(lm)]
         rows = [it["head"]] + it["rows"]
         for ri, row in enumerate(rows):
-            cells = [plain([s for s in parse_inline(c) if not s.get("nl")])
-                     for c in row]
+            cells = [self._cell(c)[0] for c in row]
             t.insert("end", "  ".join(cells) + "\n",
                      tuple(style + (["f_bold"] if ri == 0 else [])))
             if ri == 0:
@@ -1891,15 +1934,8 @@ class Viewer:
 
     def jump_line(self, line):
         t = self.text
-        line = max(line, 1)
-        t.see("%d.0" % line)
-        if t.winfo_ismapped():
-            try:
-                top = int(t.index("@0,6").split(".")[0])
-            except (tk.TclError, ValueError):
-                top = line
-            if line != top:
-                t.yview_scroll(line - top, "units")
+        line = max(int(line), 1)
+        self._scroll_to(line)
         t.tag_remove("target", "1.0", "end")
         t.tag_add("target", "%d.0" % line, "%d.end+1c" % line)
         self.root.after(1000, self._clear_target)
@@ -2024,9 +2060,13 @@ class Viewer:
 
     def _toggle_wrap(self):
         self.wrap_on = not self.wrap_on
-        self.text.configure(wrap="word" if self.wrap_on else "none")
         self._save_settings()
-        self._rerender_now()
+        if self.show_src:
+            # 源码视图整行显示，开关只对下次渲染生效
+            return
+        top = int(self.text.index("@0,6").split(".")[0])
+        self.text.configure(wrap="word" if self.wrap_on else "none")
+        self._scroll_to(top)
 
     def _toggle_src(self):
         self.show_src = not self.show_src
